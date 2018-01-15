@@ -18,6 +18,7 @@ import org.specs2.Specification
 
 // This project
 import S3.Folder
+import discovery.DataDiscovery
 import config.{ Step, StorageTarget }
 
 class CommonSpec extends Specification { def is = s2"""
@@ -40,7 +41,7 @@ class CommonSpec extends Specification { def is = s2"""
       15151,
       StorageTarget.DestinationConfig("10.0.0.17", 5433))
     val target = StorageTarget.RedshiftConfig(
-      None,
+      "test",
       "test-redsfhit-target",
       "localhost",
       "snowplowdb",
@@ -52,7 +53,8 @@ class CommonSpec extends Specification { def is = s2"""
       StorageTarget.PlainText("Supersecret1"),
       100,
       1000L,
-      Some(TunnelInput))
+      Some(TunnelInput),
+      None)
 
     def interpreter: LoaderA ~> Id = new (LoaderA ~> Id) {
       def apply[A](effect: LoaderA[A]): Id[A] = {

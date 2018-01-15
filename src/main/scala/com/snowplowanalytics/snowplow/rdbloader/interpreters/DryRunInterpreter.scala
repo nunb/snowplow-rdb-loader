@@ -16,10 +16,8 @@ package interpreters
 import java.nio.file._
 
 import scala.collection.mutable.ListBuffer
-
 import cats._
 import cats.implicits._
-
 import com.amazonaws.services.s3.AmazonS3
 
 import com.snowplowanalytics.snowplow.scalatracker.Tracker
@@ -27,8 +25,10 @@ import com.snowplowanalytics.snowplow.scalatracker.Tracker
 // This project
 import config.CliConfig
 import LoaderA._
+import LoaderError.LoaderLocalError
 import loaders.Common.SqlString
-import implementations.{S3Interpreter, TrackerInterpreter}
+import implementations.{S3Interpreter, TrackerInterpreter, ManifestInterpreter}
+
 
 /**
   * Interpreter performs all actual side-effecting work,
@@ -52,6 +52,9 @@ class DryRunInterpreter private[interpreters](
     * Value: "s3://my-jsonpaths/redshift/vendor/filename_1.json"
     */
   private val cache = collection.mutable.HashMap.empty[String, Option[S3.Key]]
+
+  lazy val manifest =
+    ManifestInterpreter.initialize(cliConfig.target.processingManifest, cliConfig.configYaml.aws.s3.region)
 
   def getDryRunLogs: String = {
     val sleep = s"Consistency check sleep time: $sleepTime\n"
@@ -79,6 +82,15 @@ class DryRunInterpreter private[interpreters](
         case DownloadData(source, dest) =>
           logMessages.append(s"Downloading data from [$source] to [$dest]")
           List.empty[Path].asRight[LoaderError]
+        case ManifestDiscover(predicate) =>
+          for {
+            optionalManifest <- manifest
+            manifestClient <- optionalManifest match {
+              case Some(manifestClient) => manifestClient.asRight
+              case None => LoaderLocalError("Processing Manifest is not configured").asLeft
+            }
+            result <- ManifestInterpreter.getUnprocessed(manifestClient, predicate)
+          } yield result
 
         case ExecuteQuery(query) =>
           logQueries.append(query)

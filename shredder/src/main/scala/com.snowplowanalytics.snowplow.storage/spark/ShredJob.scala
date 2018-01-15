@@ -19,6 +19,7 @@ package storage.spark
 import java.io.{PrintWriter, StringWriter}
 import java.util.UUID
 
+import scala.util.Try
 import scala.util.control.NonFatal
 
 // Jackson
@@ -36,6 +37,10 @@ import Scalaz._
 
 // AWS SDK
 import com.amazonaws.services.dynamodbv2.model.ProvisionedThroughputExceededException
+
+// Manifest
+import com.snowplowanalytics.manifest.core.ProcessingManifest
+import com.snowplowanalytics.manifest.core.ProcessingManifest._
 
 // Snowplow
 import iglu.client.{JsonSchemaPair, ProcessingMessageNel, Resolver, SchemaKey}
@@ -69,17 +74,49 @@ object ShredJob extends SparkJob {
     classOf[org.apache.spark.sql.execution.datasources.FileFormatWriter$WriteTaskResult]
   )
   override def sparkConfig(): SparkConf = new SparkConf()
-    .setAppName(getClass().getSimpleName())
+    .setAppName(getClass.getSimpleName)
     .setIfMissing("spark.master", "local[*]")
-    .set("spark.serializer", classOf[KryoSerializer].getName())
+    .set("spark.serializer", classOf[KryoSerializer].getName)
     .registerKryoClasses(classesToRegister)
 
   override def run(spark: SparkSession, args: Array[String]): Unit = {
-    val job = ShredJob(spark, args)
-    job.run()
+    // Job configuration
+    val shredConfig = ShredJobConfig
+      .loadConfigFrom(args)
+      .valueOr(e => throw new FatalEtlError(e.toString))
+
+    val job = new ShredJob(spark, shredConfig)
+
+    // Processing manifest, existing only on a driver
+    val manifest = shredConfig.getManifestData.map {
+      case (m, i) => (DynamodbManifest.initialize(m), i)
+    }
+
+    runJob(manifest, job)
   }
 
-  def apply(spark: SparkSession, args: Array[String]) = new ShredJob(spark, args)
+  /** Start a job, if necessary recording process to manifest */
+  def runJob(manifest: Option[(ProcessingManifest[Either[ManifestError, ?]], String)],
+             job: ShredJob): Try[Unit] = {
+    manifest match {
+      case None =>      // Manifest is not enabled, simply run a job
+        Try(job.run()).map(_ => None)
+      case Some((m, itemId)) =>   // Manifest is enabled.
+        // Envelope job into lazy function to pass to `Manifest.processItem`
+        val process = () => Try {
+          job.run()
+          val shreddedTypes = job.shreddedTypes.value.toSet
+          val payload: Payload = Payload.empty.copy(set = Map(DynamodbManifest.ShreddedTypesKeys -> shreddedTypes))
+          Some(payload)
+        }
+
+        m.processNewItem(itemId, DynamodbManifest.ShredJobApplication, process) match {
+          case Right(_) => util.Success(())
+          case Left(ManifestError.ApplicationError(t, _, _)) => util.Failure(t)
+          case Left(error) => throw new FatalEtlError(error.toString)
+        }
+    }
+  }
 
   /**
    * Pipeline the loading of raw lines into shredded JSONs.
@@ -238,7 +275,7 @@ object ShredJob extends SparkJob {
    */
   def getAlteredEnrichedOutputPath(outFolder: String): String = {
     val alteredEnrichedEventSubdirectory = "atomic-events"
-    s"${outFolder}${if (outFolder.endsWith("/")) "" else "/"}${alteredEnrichedEventSubdirectory}"
+    s"$outFolder${if (outFolder.endsWith("/")) "" else "/"}$alteredEnrichedEventSubdirectory"
   }
 
   /**
@@ -248,7 +285,7 @@ object ShredJob extends SparkJob {
    */
   def getShreddedTypesOutputPath(outFolder: String): String = {
     val shreddedTypesSubdirectory = "shredded-types"
-    s"${outFolder}${if (outFolder.endsWith("/")) "" else "/"}${shreddedTypesSubdirectory}"
+    s"$outFolder${if (outFolder.endsWith("/")) "" else "/"}$shreddedTypesSubdirectory"
   }
 
   /**
@@ -308,16 +345,16 @@ case class Event(eventId: String, newEventId: Option[String], shredded: Shredded
 /**
  * The Snowplow Shred job, written in Spark.
  * @param spark Spark session used throughout the job
- * @param args Command line arguments for the shred job
+ * @param shredConfig parsed command-line arguments
  */
-class ShredJob(@transient val spark: SparkSession, args: Array[String]) extends Serializable {
+class ShredJob(@transient val spark: SparkSession, shredConfig: ShredJobConfig) extends Serializable {
   @transient private val sc: SparkContext = spark.sparkContext
   import spark.implicits._
   import singleton._
 
-  // Job configuration
-  private val shredConfig = ShredJobConfig.loadConfigFrom(args)
-    .valueOr(e => throw new FatalEtlError(e.toString))
+  // Accumulator to track shredded types
+  val shreddedTypes = new StringSetAccumulator
+  sc.register(shreddedTypes)
 
   private val dupStorageConfig = DuplicateStorage.DynamoDbConfig.extract(
     shredConfig.duplicateStorageConfig.success,
@@ -327,6 +364,18 @@ class ShredJob(@transient val spark: SparkSession, args: Array[String]) extends 
   // We try to build DuplicateStorage early to detect failures before starting the job and create
   // the table if it doesn't exist
   @transient private val _ = DuplicateStorageSingleton.get(dupStorageConfig)
+
+  /** Save set of found shredded types into accumulator if processing manifest is enabled */
+  def recordShreddedType(jsonSchemaPairs: List[JsonSchemaPair]): Unit = {
+    if (shredConfig.dynamodbManifestTable.isEmpty) {
+      ()
+    } else {
+      val typesSet = jsonSchemaPairs.toSet[JsonSchemaPair].map {
+        case (schemaKey, _) => schemaKey.toSchemaUri
+      }
+      shreddedTypes.add(typesSet)
+    }
+  }
 
   /**
    * Runs the shred job by:
@@ -354,12 +403,16 @@ class ShredJob(@transient val spark: SparkSession, args: Array[String]) extends 
     val good = common
       .flatMap { case (line, shredded) => projectGoods(shredded).map((_, line)) }
       .map { case (shred, line) => Shredded(shred._1, shred._2, shred._3, shred._4, line) }
-      .groupBy(s => (s.eventId, s.eventFingerprint))
+      .groupBy { s => (s.eventId, s.eventFingerprint) }
       .flatMap { case (_, vs) => vs.take(1) }
       .map { s =>
         val absent = dedupeCrossBatch((s.eventId, s.eventFingerprint, s.etlTstamp),
           DuplicateStorageSingleton.get(dupStorageConfig))
         (s, absent)
+      }
+      .map { case original @ (Shredded(_, _, shreds, _, _), _) =>
+        recordShreddedType(shreds)
+        original
       }
       .cache()
 
@@ -373,7 +426,7 @@ class ShredJob(@transient val spark: SparkSession, args: Array[String]) extends 
 
     // Count synthetic duplicates, defined as events with the same id but different fingerprints
     val syntheticDupes = dupeSucceeded
-      .map(_._1)
+      .map { case (shredded, _) => shredded }
       .groupBy(_.eventId)
       .filter { case (_, vs) => vs.size > 1 }
       .map { case (k, vs) => (k, vs.size.toLong) }
@@ -398,6 +451,7 @@ class ShredJob(@transient val spark: SparkSession, args: Array[String]) extends 
         case Failure(m) => Some(Row(BadRow(s.originalLine, m).toCompactJson))
         case _ => None
       } }
+
     spark.createDataFrame(badDupes, StructType(StructField("_", StringType, true) :: Nil))
       .write
       .mode(SaveMode.Overwrite)

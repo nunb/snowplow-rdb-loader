@@ -20,6 +20,7 @@ import cats.implicits._
 import LoaderA._
 import RedshiftLoadStatements._
 import Common.SqlString
+import discovery.DataDiscovery
 import config.{ SnowplowConfig, Step }
 import config.StorageTarget.RedshiftConfig
 

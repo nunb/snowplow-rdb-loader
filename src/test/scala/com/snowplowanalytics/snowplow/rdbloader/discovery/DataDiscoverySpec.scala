@@ -11,18 +11,19 @@
  * See the Apache License Version 2.0 for the specific language governing permissions and limitations there under.
  */
 package com.snowplowanalytics.snowplow.rdbloader
+package discovery
 
-import cats.{Id, ~>}
 import cats.data.State
+import cats.{Id, ~>}
 
 import org.specs2.Specification
 
-import DataDiscovery._
-import ShreddedType._
-import LoaderError._
-import S3.Key.{coerce => s3key}
-import S3.Folder.{coerce => dir}
+import LoaderError.{DiscoveryError, NoDataFailure}
 import config.Semver
+import discovery.ShreddedType._
+import DataDiscovery._
+import S3.Folder.{coerce => dir}
+import S3.Key.{coerce => s3key}
 
 
 class DataDiscoverySpec extends Specification { def is = s2"""
@@ -101,8 +102,8 @@ class DataDiscoverySpec extends Specification { def is = s2"""
       )
     )
 
-    val discoveryTarget = DataDiscovery.InShreddedGood(shreddedGood)
-    val result = DataDiscovery.discoverFull(discoveryTarget, Semver(0,11,0), "us-east-1", None)
+    val discoveryTarget = DataDiscovery.Global(shreddedGood)
+    val result = DataDiscovery.discoverFull(discoveryTarget, "test", Semver(0,11,0), "us-east-1", None)
     val endResult = result.value.foldMap(interpreter)
 
     endResult must beRight(expected)
@@ -211,8 +212,8 @@ class DataDiscoverySpec extends Specification { def is = s2"""
       )
     )
 
-    val discoveryTarget = DataDiscovery.InShreddedGood(shreddedGood)
-    val request = DataDiscovery.discoverFull(discoveryTarget, Semver(0,11,0), "us-east-1", None)
+    val discoveryTarget = DataDiscovery.Global(shreddedGood)
+    val request = DataDiscovery.discoverFull(discoveryTarget, "test", Semver(0,11,0), "us-east-1", None)
     val result = DataDiscovery.checkConsistency(request)
     val (endState, endResult) = result.value.foldMap(interpreter).run(RealWorld(0, Nil)).value
 
@@ -238,7 +239,7 @@ class DataDiscoverySpec extends Specification { def is = s2"""
     val expected = DiscoveryError(List(NoDataFailure(shreddedGood)))
 
     val discoveryTarget = DataDiscovery.InSpecificFolder(shreddedGood)
-    val result = DataDiscovery.discoverFull(discoveryTarget, Semver(0,11,0), "us-east-1", None)
+    val result = DataDiscovery.discoverFull(discoveryTarget, "test", Semver(0,11,0), "us-east-1", None)
     val endResult = result.value.foldMap(interpreter)
 
     endResult must beLeft(expected)
@@ -261,8 +262,8 @@ class DataDiscoverySpec extends Specification { def is = s2"""
     val expected = List.empty[DataDiscovery]
 
     // The only difference with e3
-    val discoveryTarget = DataDiscovery.InShreddedGood(shreddedGood)
-    val result = DataDiscovery.discoverFull(discoveryTarget, Semver(0,11,0), "us-east-1", None)
+    val discoveryTarget = DataDiscovery.Global(shreddedGood)
+    val result = DataDiscovery.discoverFull(discoveryTarget, "test", Semver(0,11,0), "us-east-1", None)
     val endResult = result.value.foldMap(interpreter)
 
     endResult must beRight(expected)
@@ -318,8 +319,8 @@ class DataDiscoverySpec extends Specification { def is = s2"""
       )
     )
 
-    val discoveryTarget = DataDiscovery.InShreddedGood(shreddedGood)
-    val result = DataDiscovery.discoverFull(discoveryTarget, Semver(0,11,0), "us-east-1", None).value
+    val discoveryTarget = DataDiscovery.Global(shreddedGood)
+    val result = DataDiscovery.discoverFull(discoveryTarget, "test", Semver(0,11,0), "us-east-1", None).value
     val endResult = result.foldMap(interpreter)
 
     endResult must beRight(expected)

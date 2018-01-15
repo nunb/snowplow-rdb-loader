@@ -13,6 +13,9 @@
 package com.snowplowanalytics.snowplow.rdbloader
 
 import cats.Show
+import cats.data.ValidatedNel
+
+import com.snowplowanalytics.manifest.core.ProcessingManifest.ManifestError
 
 /**
  * Root error type
@@ -117,6 +120,18 @@ object LoaderError {
     def getMessage: String =
       s"Cannot extract contexts or self-describing events from directory [$path].\nInvalid key example: $example. Total $invalidKeyCount invalid keys.\nCorrupted shredded/good state or unexpected Snowplow Shred job version"
   }
+
+  case class ManifestFailure(manifestError: ManifestError) extends DiscoveryFailure {
+    def getMessage: String = manifestError.toString   // TODO: come up with meaningful error message
+  }
+
+  /** Turn non-empty list of discovery failures into top-level `LoaderError` */
+  def flattenValidated[A](validated: ValidatedNel[DiscoveryFailure, A]): Either[LoaderError, A] =
+    validated.leftMap(errors => DiscoveryError(errors.toList): LoaderError).toEither
+
+
+  def fromManifestError(manifestError: ManifestError): LoaderError =
+    DiscoveryError(ManifestFailure(manifestError))
 
   /** Other errors */
   case class LoaderLocalError(message: String) extends LoaderError

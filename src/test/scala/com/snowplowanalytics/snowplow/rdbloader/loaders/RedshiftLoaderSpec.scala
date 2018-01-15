@@ -14,7 +14,7 @@ package com.snowplowanalytics.snowplow.rdbloader
 package loaders
 
 import cats.{Id, ~>}
-
+import com.snowplowanalytics.snowplow.rdbloader.discovery.{DataDiscovery, ShreddedType}
 import org.specs2.Specification
 
 // This project

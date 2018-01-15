@@ -18,14 +18,11 @@ import java.nio.file._
 import java.nio.file.attribute.BasicFileAttributes
 
 import scala.util.control.NonFatal
-
 import cats._
 import cats.implicits._
-
 import com.amazonaws.services.s3.AmazonS3
-
+import com.snowplowanalytics.snowplow.rdbloader.interpreters.implementations.ManifestInterpreter
 import org.joda.time.DateTime
-
 import com.snowplowanalytics.snowplow.scalatracker.Tracker
 
 // This project
@@ -58,6 +55,9 @@ class RealWorldInterpreter private[interpreters](
   // lazy to wait before tunnel established
   private lazy val dbConnection = PgInterpreter.getConnection(cliConfig.target)
 
+  lazy val manifest =
+    ManifestInterpreter.initialize(cliConfig.target.processingManifest, cliConfig.configYaml.aws.s3.region)
+
   private val messages = collection.mutable.ListBuffer.empty[String]
 
   def log(message: String) = {
@@ -76,6 +76,16 @@ class RealWorldInterpreter private[interpreters](
           S3Interpreter.keyExists(amazonS3, key)
         case DownloadData(source, dest) =>
           S3Interpreter.downloadData(amazonS3, source, dest)
+        case ManifestDiscover(predicate) =>
+          for {
+            optionalManifest <- manifest
+            manifestClient <- optionalManifest match {
+              case Some(manifestClient) => manifestClient.asRight
+              case None => LoaderLocalError("Processing Manifest is not configured").asLeft
+            }
+            result <- ManifestInterpreter.getUnprocessed(manifestClient, predicate)
+          } yield result
+
 
         case ExecuteQuery(query) =>
           val result = for {

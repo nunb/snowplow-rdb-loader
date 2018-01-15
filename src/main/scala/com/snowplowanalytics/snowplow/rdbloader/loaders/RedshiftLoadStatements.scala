@@ -17,7 +17,7 @@ import cats.implicits._
 
 // This project
 import Common._
-import DataDiscovery.{AtomicDiscovery, FullDiscovery}
+import com.snowplowanalytics.snowplow.rdbloader.discovery.{DataDiscovery, ShreddedType}
 import config.{SnowplowConfig, Step}
 import config.StorageTarget.RedshiftConfig
 
@@ -60,14 +60,17 @@ object RedshiftLoadStatements {
     else {
       val init = discoveries.map(getStatements(config, target, steps)).reverse
       val vacuum: Option[List[SqlString]] =
-        init.map(_.vacuum).sequence.map { statements => statements.flatten.distinct }
+        init.map(_.vacuum).sequence.map(uniqStatements)
       val analyze: Option[List[SqlString]] =
-        init.map(_.analyze).sequence.map { statements => statements.flatten.distinct }
+        init.map(_.analyze).sequence.map(uniqStatements)
       val cleaned = init.map { statements => statements.copy(vacuum = None, analyze = None) }
       val result = cleaned.head.copy(vacuum = vacuum, analyze = analyze) :: cleaned.tail
       result.reverse
     }
   }
+
+  private def uniqStatements[A](lists: List[List[A]]): List[A] =
+    lists.flatten.distinct
 
   /**
    * Transform discovery results into group of load statements (atomic, shredded, etc)
@@ -75,11 +78,11 @@ object RedshiftLoadStatements {
    */
   private def getStatements(config: SnowplowConfig, target: RedshiftConfig, steps: Set[Step])(discovery: DataDiscovery): RedshiftLoadStatements = {
     discovery match {
-      case discovery: FullDiscovery =>
+      case discovery: DataDiscovery.FullDiscovery =>
         val shreddedStatements = discovery.shreddedTypes.map(transformShreddedType(config, target, _))
         val atomic = RedshiftLoadStatements.buildCopyFromTsvStatement(config, target, discovery.atomicEvents)
         buildLoadStatements(target, steps, atomic, shreddedStatements, discovery.base)
-      case _: AtomicDiscovery =>
+      case _: DataDiscovery.AtomicDiscovery =>
         val atomic = RedshiftLoadStatements.buildCopyFromTsvStatement(config, target, discovery.atomicEvents)
         buildLoadStatements(target, steps, atomic, Nil, discovery.base)
     }
