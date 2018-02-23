@@ -30,6 +30,7 @@ object LoaderError {
       case d: DiscoveryError => "Data discovery error with following issues:\n" + d.failures.map(_.getMessage).mkString("\n")
       case l: StorageTargetError => "Data loading error " + l.message
       case l: LoaderLocalError => "Internal Exception " + l.message
+      case m: LoadManifestError => "Load Manifest: " + m.message
     }
   }
 
@@ -56,6 +57,9 @@ object LoaderError {
    * These errors have short-circuit semantics (as in `scala.Either`)
    */
   case class StorageTargetError(message: String) extends LoaderError
+
+  /** `atomic.manifest` prevents this folder to be loaded */
+  case class LoadManifestError(message: String) extends LoaderError
 
   /**
    * Discovery failure. Represents failure of single step.

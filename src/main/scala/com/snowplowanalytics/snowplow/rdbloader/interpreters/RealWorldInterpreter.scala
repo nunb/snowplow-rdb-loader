@@ -21,7 +21,6 @@ import scala.util.control.NonFatal
 import cats._
 import cats.implicits._
 import com.amazonaws.services.s3.AmazonS3
-import com.snowplowanalytics.snowplow.rdbloader.interpreters.implementations.ManifestInterpreter
 import org.joda.time.DateTime
 import com.snowplowanalytics.snowplow.scalatracker.Tracker
 
@@ -30,7 +29,7 @@ import config.CliConfig
 import LoaderA._
 import LoaderError.LoaderLocalError
 import utils.Common
-import implementations.{PgInterpreter, S3Interpreter, SshInterpreter, TrackerInterpreter}
+import implementations.{PgInterpreter, S3Interpreter, SshInterpreter, TrackerInterpreter, ManifestInterpreter}
 import com.snowplowanalytics.snowplow.rdbloader.{ Log => ExitLog }
 
 /**
@@ -87,10 +86,10 @@ class RealWorldInterpreter private[interpreters](
           } yield result
 
 
-        case ExecuteQuery(query) =>
+        case ExecuteUpdate(query) =>
           val result = for {
             conn <- dbConnection
-            res <- PgInterpreter.executeQuery(conn)(query)
+            res <- PgInterpreter.executeUpdate(conn)(query)
           } yield res
           result.asInstanceOf[Id[A]]
         case CopyViaStdin(files, query) =>
@@ -98,6 +97,12 @@ class RealWorldInterpreter private[interpreters](
             conn <- dbConnection
             _ = log(s"Copying ${files.length} files via stdin")
             res <- PgInterpreter.copyViaStdin(conn, files, query)
+          } yield res
+
+        case ExecuteQuery(query, d) =>
+          for {
+            conn <- dbConnection
+            res <- PgInterpreter.executeQuery(conn)(query)(d)
           } yield res
 
         case CreateTmpDir =>

@@ -21,8 +21,7 @@ import LoaderA._
 import RedshiftLoadStatements._
 import Common.SqlString
 import discovery.DataDiscovery
-import config.{ SnowplowConfig, Step }
-import config.StorageTarget.RedshiftConfig
+import config.{ SnowplowConfig, Step, StorageTarget }
 
 
 /**
@@ -45,9 +44,13 @@ object RedshiftLoader {
    * @param target Redshift storage target configuration
    * @param steps SQL steps
    */
-  def run(config: SnowplowConfig, target: RedshiftConfig, steps: Set[Step], discovery: List[DataDiscovery]) = {
+  def run(config: SnowplowConfig,
+          target: StorageTarget.RedshiftConfig,
+          steps: Set[Step],
+          discovery: List[DataDiscovery]) = {
     val queue = buildQueue(config, target, steps)(discovery)
-    queue.traverse(loadFolder).void
+    val checkManifest = steps.contains(Step.LoadManifestCheck)
+    queue.traverse(loadFolder(checkManifest)).void
   }
 
   /**
@@ -56,15 +59,22 @@ object RedshiftLoader {
    * @param statements prepared load statements
    * @return application state
    */
-  def loadFolder(statements: RedshiftLoadStatements): LoaderAction[Unit] = {
+  def loadFolder(checkManifest: Boolean)(statements: RedshiftLoadStatements): LoaderAction[Unit] = {
     import LoaderA._
-
-    val loadStatements = statements.events :: statements.shredded ++ List(statements.manifest)
 
     for {
       _ <- LoaderAction.liftA(LoaderA.print(s"Processing ${statements.base}"))
-      _ <- EitherT(executeTransaction(loadStatements))
+
+      _ <- EitherT(executeUpdate(Common.BeginTransaction))
+      _ <- EitherT(executeUpdate(statements.events))
+      _ <- if (checkManifest) Common.checkLoadManifest(statements.dbSchema) else LoaderAction.unit
+
+      _ <- EitherT(executeQueries(statements.shredded))
+      _ <- EitherT(executeUpdate(statements.manifest))
+      _ <- EitherT(executeUpdate(Common.CommitTransaction))
+
       _ <- LoaderAction.liftA(LoaderA.print("Loaded"))
+
       _ <- vacuum(statements)
       _ <- analyze(statements)
     } yield ()
@@ -84,7 +94,6 @@ object RedshiftLoader {
       case None => LoaderAction.unit
     }
 
-
   /**
    * Return action executing ANALYZE statements if there's any vacuum statements,
    * or noop if no vacuum statements were generated
@@ -97,7 +106,7 @@ object RedshiftLoader {
           statement <- block
         } yield for {
           _ <- LoaderA.print(statement)
-          _ <- executeQuery(statement)
+          _ <- executeUpdate(statement)
         } yield ()
         LoaderAction.liftA(actions.sequence).void
       case None => LoaderAction.liftA(LoaderA.print("Skip VACUUM"))

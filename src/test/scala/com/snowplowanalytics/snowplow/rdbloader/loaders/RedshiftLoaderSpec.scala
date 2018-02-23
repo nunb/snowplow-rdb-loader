@@ -13,14 +13,17 @@
 package com.snowplowanalytics.snowplow.rdbloader
 package loaders
 
+import java.time.Instant
+
 import cats.{Id, ~>}
-import com.snowplowanalytics.snowplow.rdbloader.discovery.{DataDiscovery, ShreddedType}
+
 import org.specs2.Specification
 
 // This project
 import Common.SqlString.{unsafeCoerce => sql}
 import S3.{ Folder, Key }
 import config.{ CliConfig, Step, Semver }
+import discovery.{DataDiscovery, ShreddedType}
 
 class RedshiftLoaderSpec extends Specification { def is = s2"""
   Discover atomic events data $e1
@@ -28,6 +31,7 @@ class RedshiftLoaderSpec extends Specification { def is = s2"""
   Do not fail on empty discovery $e3
   Do not sleep with disabled consistency check $e4
   Perform manifest-insertion and load within same transaction $e5
+  Abort loading if manifest entry exists $e6
   """
 
   import SpecHelpers._
@@ -54,7 +58,7 @@ class RedshiftLoaderSpec extends Specification { def is = s2"""
     }
 
     val expected =
-      List(DataDiscovery.FullDiscovery( S3.Folder.coerce("s3://snowplow-acme-storage/shredded/good/run=2017-05-22-12-20-57/"), 2, Nil))
+      List(DataDiscovery(S3.Folder.coerce("s3://snowplow-acme-storage/shredded/good/run=2017-05-22-12-20-57/"), 2, Nil))
 
     val action = Common.discover(CliConfig(validConfig, validTarget, Set.empty, None, None, false))
     val result = action.value.foldMap(interpreter)
@@ -66,7 +70,7 @@ class RedshiftLoaderSpec extends Specification { def is = s2"""
     val separator = "\t"
 
     val steps: Set[Step] = Step.defaultSteps ++ Set(Step.Vacuum)
-    val discovery = DataDiscovery.FullDiscovery(
+    val discovery = DataDiscovery(
       S3.Folder.coerce("s3://snowplow-acme-storage/shredded/good/run=2017-05-22-12-20-57/"), 3,
       List(
         ShreddedType(
@@ -109,7 +113,7 @@ class RedshiftLoaderSpec extends Specification { def is = s2"""
         | LIMIT 1;""".stripMargin
 
     val expected = List(RedshiftLoadStatements(
-      sql(atomic), shredded, Some(vacuum), Some(analyze), sql(manifest), Folder.coerce("s3://snowplow-acme-storage/shredded/good/run=2017-05-22-12-20-57/")
+      "atomic", sql(atomic), shredded, Some(vacuum), Some(analyze), sql(manifest), Folder.coerce("s3://snowplow-acme-storage/shredded/good/run=2017-05-22-12-20-57/")
 
     ))
 
@@ -182,7 +186,7 @@ class RedshiftLoaderSpec extends Specification { def is = s2"""
     val action = Common.discover(CliConfig(validConfig, validTarget, steps, None, None, false)).value
     val result: Either[LoaderError, List[DataDiscovery]] = action.foldMap(interpreter)
 
-    val expected = List(DataDiscovery.FullDiscovery(
+    val expected = List(DataDiscovery(
       S3.Folder.coerce("s3://snowplow-acme-storage/shredded/good/run=2017-05-22-12-20-57/"), 3,
       List(
         ShreddedType(
@@ -196,7 +200,6 @@ class RedshiftLoaderSpec extends Specification { def is = s2"""
   }
 
   def e5 = {
-
     val expected = List(
       "BEGIN",
       "LOAD INTO atomic MOCK",
@@ -217,12 +220,15 @@ class RedshiftLoaderSpec extends Specification { def is = s2"""
     def interpreter: LoaderA ~> Id = new (LoaderA ~> Id) {
       def apply[A](effect: LoaderA[A]): Id[A] = {
         effect match {
-          case LoaderA.ExecuteQuery(query) =>
+          case LoaderA.ExecuteUpdate(query) =>
             queries.append(query)
             Right(1L)
 
           case LoaderA.Print(_) =>
             ()
+
+          case LoaderA.ExecuteQuery(_, _) =>
+            Right(None)
 
           case action =>
             throw new RuntimeException(s"Unexpected Action [$action]")
@@ -231,6 +237,7 @@ class RedshiftLoaderSpec extends Specification { def is = s2"""
     }
 
     val input = RedshiftLoadStatements(
+      "atomic",
       sql("LOAD INTO atomic MOCK"),
       List(sql("LOAD INTO SHRED 1 MOCK"), sql("LOAD INTO SHRED 2 MOCK"), sql("LOAD INTO SHRED 3 MOCK")),
       Some(List(sql("VACUUM MOCK"))),   // Must be shred cardinality + 1
@@ -239,12 +246,68 @@ class RedshiftLoaderSpec extends Specification { def is = s2"""
       Folder.coerce("s3://noop")
     )
 
-    val state = RedshiftLoader.loadFolder(input)
+    val state = RedshiftLoader.loadFolder(false)(input)
     val action = state.value
     val result = action.foldMap(interpreter)
 
     val transactionsExpectation = queries.toList must beEqualTo(expected)
     val resultExpectation = result must beRight
+    transactionsExpectation.and(resultExpectation)
+  }
+
+  def e6 = {
+    val expected = List(
+      "BEGIN",
+      "LOAD INTO atomic MOCK",
+      "SELECT events",
+      "SELECT manifest"
+    )
+
+    val queries = collection.mutable.ListBuffer.empty[String]
+
+    def interpreter: LoaderA ~> Id = new (LoaderA ~> Id) {
+      def apply[A](effect: LoaderA[A]): Id[A] = {
+        effect match {
+          case LoaderA.ExecuteUpdate(query) =>
+            queries.append(query)
+            Right(1L)
+
+          case LoaderA.Print(_) =>
+            ()
+
+          case LoaderA.ExecuteQuery(query, _) if query.contains("FROM atomic.events") =>
+            queries.append("SELECT events")
+            val time = Instant.ofEpochMilli(1519757441133L)
+            Right(Some(db.Entities.Timestamp(time)))
+
+          case LoaderA.ExecuteQuery(query, _) if query.contains("FROM atomic.manifest") =>
+            queries.append("SELECT manifest")
+            val etlTime = Instant.ofEpochMilli(1519757441133L)
+            val commitTime = Instant.ofEpochMilli(1519777441133L)
+            Right(Some(db.Entities.LoadManifestItem(etlTime, commitTime, 1000, 5)))
+
+          case action =>
+            throw new RuntimeException(s"Unexpected Action [$action]")
+        }
+      }
+    }
+
+    val input = RedshiftLoadStatements(
+      "atomic",
+      sql("LOAD INTO atomic MOCK"),
+      List(sql("LOAD INTO SHRED 1 MOCK"), sql("LOAD INTO SHRED 2 MOCK"), sql("LOAD INTO SHRED 3 MOCK")),
+      Some(List(sql("VACUUM MOCK"))),   // Must be shred cardinality + 1
+      Some(List(sql("ANALYZE MOCK"))),
+      sql("MANIFEST INSERT MOCK"),
+      Folder.coerce("s3://noop")
+    )
+
+    val state = RedshiftLoader.loadFolder(true)(input)
+    val action = state.value
+    val result = action.foldMap(interpreter)
+
+    val transactionsExpectation = queries.toList must beEqualTo(expected)
+    val resultExpectation = result must beLeft
     transactionsExpectation.and(resultExpectation)
   }
 }

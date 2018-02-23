@@ -29,7 +29,7 @@ class CommonSpec extends Specification { def is = s2"""
     val expected = List(
       "EC2 PROPERTY snowplow.redshift.key key", // Retrieve key
       "SSH TUNNEL ESTABLISH",                   // Open
-      "BEGIN", "COPY", "INSERT", "COMMIT", "BEGIN", "ANALYZE", "COMMIT",
+      "BEGIN", "COPY", "SELECT", "INSERT", "COMMIT", "BEGIN", "ANALYZE", "COMMIT",
       "SSH TUNNEL CLOSE")                       // Close
 
     val actions = collection.mutable.ListBuffer.empty[String]
@@ -59,9 +59,13 @@ class CommonSpec extends Specification { def is = s2"""
     def interpreter: LoaderA ~> Id = new (LoaderA ~> Id) {
       def apply[A](effect: LoaderA[A]): Id[A] = {
         effect match {
-          case LoaderA.ExecuteQuery(query) =>
+          case LoaderA.ExecuteUpdate(query) =>
             actions.append(query.split(" ").head.trim)
             Right(1L)
+
+          case LoaderA.ExecuteQuery(query, _) =>
+            actions.append(query.split(" ").head.trim)
+            Right(None)
 
           case LoaderA.GetEc2Property(name) =>
             val value = "EC2 PROPERTY " ++ name ++ " key"
@@ -85,7 +89,7 @@ class CommonSpec extends Specification { def is = s2"""
     }
 
     val cliConfig = config.CliConfig(SpecHelpers.validConfig, target, Step.defaultSteps, None, None, false)
-    val discovery = DataDiscovery.FullDiscovery(
+    val discovery = DataDiscovery(
       Folder.coerce(cliConfig.configYaml.aws.s3.buckets.shredded.good ++ "run=2017-10-10-10-30-30/"), 1L, Nil)
     val state = Common.load(cliConfig, List(discovery))
     val action = state.value

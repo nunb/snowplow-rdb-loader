@@ -92,13 +92,16 @@ class DryRunInterpreter private[interpreters](
             result <- ManifestInterpreter.getUnprocessed(manifestClient, predicate)
           } yield result
 
-        case ExecuteQuery(query) =>
+        case ExecuteUpdate(query) =>
           logQueries.append(query)
           0L.asRight[LoaderError]
         case CopyViaStdin(files, _) =>
           // Will never work while `DownloadData` is noop
           logCopyFiles.appendAll(files)
           0L.asRight[LoaderError]
+
+        case ExecuteQuery(_, _) =>
+          None.asRight    // All used decoders return something with Option
 
         case CreateTmpDir =>
           logMessages.append("Created temporary directory")

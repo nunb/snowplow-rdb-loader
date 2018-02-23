@@ -23,6 +23,7 @@ import com.snowplowanalytics.manifest.core.ProcessingManifest.Item
 // This library
 import Security.Tunnel
 import loaders.Common.SqlString
+import db.Decoder
 
 /**
  * RDB Loader algebra. Used to build Free data-structure,
@@ -39,8 +40,11 @@ object LoaderA {
   case class ManifestDiscover(predicate: Item => Boolean) extends LoaderA[Either[LoaderError, List[Item]]]
 
   // Loading ops
-  case class ExecuteQuery(query: SqlString) extends LoaderA[Either[LoaderError, Long]]
-  case class CopyViaStdin(files: List[Path], query: SqlString) extends LoaderA[Either[LoaderError, Long]]
+  case class ExecuteUpdate(sql: SqlString) extends LoaderA[Either[LoaderError, Long]]
+  case class CopyViaStdin(files: List[Path], sql: SqlString) extends LoaderA[Either[LoaderError, Long]]
+
+  // JDBC ops
+  case class ExecuteQuery[A](query: SqlString, ev: Decoder[A]) extends LoaderA[Either[LoaderError, A]]
 
   // FS ops
   case object CreateTmpDir extends LoaderA[Either[LoaderError, Path]]
@@ -80,15 +84,21 @@ object LoaderA {
   def manifestDiscover(predicate: Item => Boolean): Action[Either[LoaderError, List[Item]]] =
     Free.liftF[LoaderA, Either[LoaderError, List[Item]]](ManifestDiscover(predicate))
 
-  /** Execute single query (against target in interpreter) */
-  def executeQuery(query: SqlString): Action[Either[LoaderError, Long]] =
-    Free.liftF[LoaderA, Either[LoaderError, Long]](ExecuteQuery(query))
+  /** Execute single SQL statement (against target in interpreter) */
+  def executeUpdate(sql: SqlString): Action[Either[LoaderError, Long]] =
+    Free.liftF[LoaderA, Either[LoaderError, Long]](ExecuteUpdate(sql))
 
   /** Execute multiple (against target in interpreter) */
   def executeQueries(queries: List[SqlString]): Action[Either[LoaderError, Unit]] = {
-    val shortCircuiting = queries.traverse(query => EitherT(executeQuery(query)))
+    val shortCircuiting = queries.traverse(query => EitherT(executeUpdate(query)))
     shortCircuiting.void.value
   }
+
+
+  /** Execute query and parse results into `A` */
+  def executeQuery[A](query: SqlString)(implicit ev: Decoder[A]): LoaderAction[A] =
+    EitherT(Free.liftF[LoaderA, Either[LoaderError, A]](ExecuteQuery[A](query, ev)))
+
 
   /** Execute SQL transaction (against target in interpreter) */
   def executeTransaction(queries: List[SqlString]): Action[Either[LoaderError, Unit]] = {

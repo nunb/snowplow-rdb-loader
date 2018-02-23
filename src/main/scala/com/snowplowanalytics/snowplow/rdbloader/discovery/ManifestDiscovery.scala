@@ -76,21 +76,6 @@ object ManifestDiscovery {
     } yield discoveries.distinct  // .distinct is double-protection from double-loading
   }
 
-  def discoverAtomic(id: String): LoaderAction[List[DataDiscovery]] = {
-    val itemsA = LoaderA.manifestDiscover(predicate(id))
-    for {
-      items       <- EitherT[Action, LoaderError, List[Item]](itemsA)
-      discoveries <- items.traverse { item => for {
-        infos     <- LoaderAction.liftE(parseItemPayload(item))
-        baseE      = S3.Folder.parse(item.id).leftMap(ManifestError.parseError).leftMap(LoaderError.fromManifestError)
-        base      <- LoaderAction.liftE(baseE)
-        discovery  = DataDiscovery.AtomicDiscovery(base, 0)
-      } yield discovery }
-
-    } yield discoveries.distinct  // .distinct is double-protection from double-loading
-
-  }
-
   /** Primary predicate, deciding what `Item` should be loaded */
   def predicate(id: String)(item: Item): Boolean =
     processedBy(ShredderApp, item) && !processedBy(getLoaderApp(id), item)
@@ -168,6 +153,6 @@ object ManifestDiscovery {
       S3.Folder.parse(itemId)
         .leftMap(error => LoaderError.fromManifestError(ManifestError.parseError(error)))
 
-    (LoaderAction.liftE(base), shreddedTypes).mapN(DataDiscovery.FullDiscovery(_, 0, _))
+    (LoaderAction.liftE(base), shreddedTypes).mapN(DataDiscovery(_, 0, _))
   }
 }

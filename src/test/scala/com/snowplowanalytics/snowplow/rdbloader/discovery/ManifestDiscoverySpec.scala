@@ -53,7 +53,7 @@ class ManifestDiscoverySpec extends Specification { def is = s2"""
     val action = ManifestDiscovery.discover("test-storage", "us-east-1", None)
     val result = action.value.foldMap(ManifestDiscoverySpec.interpreter(records))
     result must beRight(List(
-      DataDiscovery.FullDiscovery(base, 0, Nil)
+      DataDiscovery(base, 0, Nil)
     ))
   }
 
@@ -95,7 +95,7 @@ class ManifestDiscoverySpec extends Specification { def is = s2"""
     val action = ManifestDiscovery.discover("id", "us-east-1", None)
     val result = action.value.foldMap(ManifestDiscoverySpec.interpreter(records))
     result must beRight(List(
-      DataDiscovery.FullDiscovery(base2, 0, List(
+      DataDiscovery(base2, 0, List(
         ShreddedType(
           ShreddedType.Info(base2, "com.acme", "context", 1, Semver(0,13,0)),
           S3.Key.coerce("s3://jsonpaths-assets/com.acme/context_1.json")
@@ -126,19 +126,19 @@ class ManifestDiscoverySpec extends Specification { def is = s2"""
     )
 
     val expected = List(
-      DataDiscovery.FullDiscovery(base1, 0, List(
+      DataDiscovery(base1, 0, List(
         ShreddedType(
           ShreddedType.Info(base1, "com.acme", "event", 1, Semver(0,13,0)),
           S3.Key.coerce("s3://jsonpaths-assets-other/com.acme/event_1.json")
         )
       )),
-      DataDiscovery.FullDiscovery(base2, 0, List(
+      DataDiscovery(base2, 0, List(
         ShreddedType(
           ShreddedType.Info(base2, "com.acme", "event", 1, Semver(0,13,0)),
           S3.Key.coerce("s3://jsonpaths-assets-other/com.acme/event_1.json")
         )
       )),
-      DataDiscovery.FullDiscovery(base3, 0, List(
+      DataDiscovery(base3, 0, List(
         ShreddedType(
           ShreddedType.Info(base3, "com.acme", "context", 1, Semver(0,13,0)),
           S3.Key.coerce("s3://jsonpaths-assets/com.acme/context_1.json")

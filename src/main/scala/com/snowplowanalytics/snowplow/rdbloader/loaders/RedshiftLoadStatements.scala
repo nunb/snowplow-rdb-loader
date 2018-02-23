@@ -25,6 +25,7 @@ import config.StorageTarget.RedshiftConfig
 /**
  * Result of discovery and SQL-statement generation steps
  *
+ * @param dbSchema common DB schema (e.g. atomic)
  * @param events COPY FROM statement to load `events` table
  * @param shredded COPY FROM statements to load shredded tables
  * @param vacuum VACUUM statements **including `events` table** if necessary
@@ -32,6 +33,7 @@ import config.StorageTarget.RedshiftConfig
  * @param manifest SQL statement to populate `manifest` table
  */
 case class RedshiftLoadStatements(
+    dbSchema: String,
     events: SqlString,
     shredded: List[SqlString],
     vacuum: Option[List[SqlString]],
@@ -77,15 +79,9 @@ object RedshiftLoadStatements {
    * More than one `RedshiftLoadStatements` must be grouped with others using `buildQueue`
    */
   private def getStatements(config: SnowplowConfig, target: RedshiftConfig, steps: Set[Step])(discovery: DataDiscovery): RedshiftLoadStatements = {
-    discovery match {
-      case discovery: DataDiscovery.FullDiscovery =>
-        val shreddedStatements = discovery.shreddedTypes.map(transformShreddedType(config, target, _))
-        val atomic = RedshiftLoadStatements.buildCopyFromTsvStatement(config, target, discovery.atomicEvents)
-        buildLoadStatements(target, steps, atomic, shreddedStatements, discovery.base)
-      case _: DataDiscovery.AtomicDiscovery =>
-        val atomic = RedshiftLoadStatements.buildCopyFromTsvStatement(config, target, discovery.atomicEvents)
-        buildLoadStatements(target, steps, atomic, Nil, discovery.base)
-    }
+    val shreddedStatements = discovery.shreddedTypes.map(transformShreddedType(config, target, _))
+    val atomic = RedshiftLoadStatements.buildCopyFromTsvStatement(config, target, discovery.atomicEvents)
+    buildLoadStatements(target, steps, atomic, shreddedStatements, discovery.base)
   }
 
   /**
@@ -124,7 +120,7 @@ object RedshiftLoadStatements {
       Some(statements)
     } else None
 
-    RedshiftLoadStatements(atomicCopyStatements, shreddedCopyStatements, vacuum, analyze, manifestStatement, base)
+    RedshiftLoadStatements(target.schema, atomicCopyStatements, shreddedCopyStatements, vacuum, analyze, manifestStatement, base)
   }
 
 
@@ -167,6 +163,13 @@ object RedshiftLoadStatements {
       | LIMIT 1;""".stripMargin)
   }
 
+  def getCheckManifestStatement(databaseSchema: String): SqlString = {
+    SqlString.unsafeCoerce(
+      s"""
+         |
+       """.stripMargin)
+  }
+
   /**
    * Build COPY FROM JSON SQL-statement for shredded types
    *
@@ -204,6 +207,24 @@ object RedshiftLoadStatements {
    */
   def buildVacuumStatement(tableName: String): SqlString =
     SqlString.unsafeCoerce(s"VACUUM SORT ONLY $tableName;")
+
+  def buildGetTimestampStatement(schema: String): SqlString = {
+    SqlString.unsafeCoerce(s"""
+      |SELECT etl_tstamp
+      | FROM ${Common.getEventsTable(schema)}
+      | WHERE etl_tstamp IS NOT null
+      | ORDER BY etl_tstamp DESC
+      | LIMIT 1""".stripMargin)
+  }
+
+  def buildGetManifestRecordStatement(schema: String, etlTstamp: String): SqlString = {
+    SqlString.unsafeCoerce(
+      s"""
+         |SELECT COUNT(*)
+         | FROM ${Common.getEventsTable(schema)}
+         | WHERE etl_tstamp IS '$etlTstamp'
+       """.stripMargin)
+  }
 
   /**
    * SQL statements for particular shredded type, grouped by their purpose
