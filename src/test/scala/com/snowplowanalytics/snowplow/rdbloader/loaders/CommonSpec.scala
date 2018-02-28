@@ -90,7 +90,7 @@ class CommonSpec extends Specification { def is = s2"""
 
     val cliConfig = config.CliConfig(SpecHelpers.validConfig, target, Step.defaultSteps, None, None, false)
     val discovery = DataDiscovery(
-      Folder.coerce(cliConfig.configYaml.aws.s3.buckets.shredded.good ++ "run=2017-10-10-10-30-30/"), 1L, Nil)
+      Folder.coerce(cliConfig.configYaml.aws.s3.buckets.shredded.good ++ "run=2017-10-10-10-30-30/"), 1L, Nil, specificFolder = false)
     val state = Common.load(cliConfig, List(discovery))
     val action = state.value
     val result = action.foldMap(interpreter)

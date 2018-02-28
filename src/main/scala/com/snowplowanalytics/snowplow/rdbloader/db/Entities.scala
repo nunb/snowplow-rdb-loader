@@ -2,6 +2,8 @@ package com.snowplowanalytics.snowplow.rdbloader.db
 
 import java.time.Instant
 
+import com.snowplowanalytics.snowplow.rdbloader.config.Semver
+
 /** Different entities that are queried from database using `Decoder`s */
 object Entities {
 
@@ -14,4 +16,6 @@ object Entities {
                               commitTstamp: Instant,
                               eventCount: Int,
                               shreddedCardinality: Int)
+
+  case class AtomicEventsDescription(version: Semver)
 }

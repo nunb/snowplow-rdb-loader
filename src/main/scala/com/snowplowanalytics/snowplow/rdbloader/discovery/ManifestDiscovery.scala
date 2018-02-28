@@ -21,7 +21,6 @@ import com.snowplowanalytics.iglu.core.SchemaKey
 import com.snowplowanalytics.manifest.core.ProcessingManifest._
 import com.snowplowanalytics.manifest.core.ProcessingManifest.ManifestError._
 
-
 import com.snowplowanalytics.snowplow.rdbloader.LoaderError._
 import com.snowplowanalytics.snowplow.rdbloader.config.Semver
 import com.snowplowanalytics.snowplow.rdbloader.generated.ProjectMetadata
@@ -153,6 +152,6 @@ object ManifestDiscovery {
       S3.Folder.parse(itemId)
         .leftMap(error => LoaderError.fromManifestError(ManifestError.parseError(error)))
 
-    (LoaderAction.liftE(base), shreddedTypes).mapN(DataDiscovery(_, 0, _))
+    (LoaderAction.liftE(base), shreddedTypes).mapN(DataDiscovery(_, 0, _, false))
   }
 }

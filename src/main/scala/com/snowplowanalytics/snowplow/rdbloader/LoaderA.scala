@@ -89,7 +89,7 @@ object LoaderA {
     Free.liftF[LoaderA, Either[LoaderError, Long]](ExecuteUpdate(sql))
 
   /** Execute multiple (against target in interpreter) */
-  def executeQueries(queries: List[SqlString]): Action[Either[LoaderError, Unit]] = {
+  def executeUpdates(queries: List[SqlString]): Action[Either[LoaderError, Unit]] = {
     val shortCircuiting = queries.traverse(query => EitherT(executeUpdate(query)))
     shortCircuiting.void.value
   }
@@ -105,7 +105,7 @@ object LoaderA {
     val begin = SqlString.unsafeCoerce("BEGIN")
     val commit = SqlString.unsafeCoerce("COMMIT")
     val transaction = (begin :: queries) :+ commit
-    executeQueries(transaction)
+    executeUpdates(transaction)
   }
 
 

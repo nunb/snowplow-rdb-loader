@@ -5,6 +5,7 @@ import java.sql.{ResultSet, SQLException}
 
 import Decoder._
 import Entities._
+import com.snowplowanalytics.snowplow.rdbloader.config.Semver
 
 trait Decoder[A] {
   def decode(resultSet: ResultSet): Either[JdbcDecodeError, A]
@@ -83,12 +84,46 @@ object Decoder {
           val eventCount = resultSet.getInt("event_count")
           val shreddedCardinality = resultSet.getInt("shredded_cardinality")
 
+          eventCount.toString ++ shreddedCardinality.toString // forcing NPE
+
           buffer = LoadManifestItem(etlTstamp, commitTstamp, eventCount, shreddedCardinality)
 
           Option(buffer).asRight[JdbcDecodeError]
         } catch {
           case s: SQLException =>
             JdbcDecodeError(s.getMessage).asLeft[Option[LoadManifestItem]]
+          case _: NullPointerException =>
+            val message = "Error while decoding Load Manifest Item. Not all expected values are available"
+            JdbcDecodeError(message).asLeft[Option[LoadManifestItem]]
+        } finally {
+          resultSet.close()
+        }
+      }
+    }
+
+  implicit val descriptionDecoder: Decoder[Option[AtomicEventsDescription]] =
+    new Decoder[Option[AtomicEventsDescription]] {
+      final def decode(resultSet: ResultSet): Either[JdbcDecodeError, Option[AtomicEventsDescription]] = {
+        var buffer: AtomicEventsDescription = null
+        try {
+          resultSet.next()
+          val description = resultSet.getString("description")
+          val version = Semver.decodeSemver(description) match {
+            case Right(v) => v
+            case Left(e) => throw new IllegalArgumentException(e)
+          }
+
+          buffer = AtomicEventsDescription(version)
+
+          Option(buffer).asRight[JdbcDecodeError]
+        } catch {
+          case s: SQLException =>
+            JdbcDecodeError(s.getMessage).asLeft[Option[AtomicEventsDescription]]
+          case e: IllegalArgumentException =>
+            JdbcDecodeError(s"Unexpected events table description: ${e.getMessage}").asLeft[Option[AtomicEventsDescription]]
+          case _: NullPointerException =>
+            val message = "Error while decoding events table description. Not all expected values are available"
+            JdbcDecodeError(message).asLeft[Option[AtomicEventsDescription]]
         } finally {
           resultSet.close()
         }

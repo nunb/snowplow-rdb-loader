@@ -15,6 +15,7 @@ package loaders
 
 import cats.data._
 import cats.implicits._
+import com.snowplowanalytics.snowplow.rdbloader.loaders.Common.EventsTable
 
 // This project
 import LoaderA._
@@ -50,6 +51,7 @@ object RedshiftLoader {
           discovery: List[DataDiscovery]) = {
     val queue = buildQueue(config, target, steps)(discovery)
     val checkManifest = steps.contains(Step.LoadManifestCheck)
+
     queue.traverse(loadFolder(checkManifest)).void
   }
 
@@ -66,10 +68,8 @@ object RedshiftLoader {
       _ <- LoaderAction.liftA(LoaderA.print(s"Processing ${statements.base}"))
 
       _ <- EitherT(executeUpdate(Common.BeginTransaction))
-      _ <- EitherT(executeUpdate(statements.events))
-      _ <- if (checkManifest) Common.checkLoadManifest(statements.dbSchema) else LoaderAction.unit
-
-      _ <- EitherT(executeQueries(statements.shredded))
+      _ <- getLoad(checkManifest, statements.dbSchema, statements.atomicCopy)
+      _ <- EitherT(executeUpdates(statements.shredded))
       _ <- EitherT(executeUpdate(statements.manifest))
       _ <- EitherT(executeUpdate(Common.CommitTransaction))
 
@@ -78,6 +78,42 @@ object RedshiftLoader {
       _ <- vacuum(statements)
       _ <- analyze(statements)
     } yield ()
+  }
+
+  def getLoad(checkManifest: Boolean, dbSchema: String, copy: AtomicCopy): LoaderAction[Unit] = {
+    def check(eventsTable: EventsTable): LoaderAction[Unit] = {
+      if (checkManifest) Common.checkLoadManifest(dbSchema, eventsTable) else LoaderAction.unit
+    }
+
+    copy match {
+      case StraightCopy(sql) => for {
+        _ <- EitherT(executeUpdate(sql))
+        _ <- check(Common.AtomicEvents(dbSchema))
+      } yield ()
+      case TransitCopy(sql) => for {
+        description <- db.Schema.getEventsVersion(dbSchema)
+        _ <- description match {
+          case None =>
+            val message = s"Cannot extract description of ${Common.getEventsTable(dbSchema)} (e.g. '0.10.0'). " +
+              s"Unable to proceed to transient COPY. Use --skip ${Step.TransitCopy.asString} to skip"
+            LoaderAction.liftE(LoaderError.LoadManifestError(message).asLeft)
+          case Some(d) =>
+            db.EventsDdl.registry.get(d.version) match {
+              case Some(generator) =>
+                val sql = generator(Common.TransitEventsTable)
+                EitherT(LoaderA.executeUpdate(sql))
+              case None =>
+                val message = s"DDL for events table of [${d.version}] is not supported for transient COPY. " +
+                  s"Use --skip ${Step.TransitCopy.asString} to skip"
+                LoaderAction.liftE(LoaderError.LoadManifestError(message).asLeft)
+            }
+        }
+        _ <- EitherT(executeUpdate(sql))
+        _ <- check(Common.TransitTable)
+        alter = RedshiftLoadStatements.buildAppendStatement(dbSchema, Common.EventsTable, Common.TransitEventsTable)
+        _ <- EitherT(executeUpdate(alter))
+      } yield ()
+    }
   }
 
   /**

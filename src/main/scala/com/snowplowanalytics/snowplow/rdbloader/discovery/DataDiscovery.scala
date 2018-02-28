@@ -13,6 +13,7 @@
 package com.snowplowanalytics.snowplow.rdbloader
 package discovery
 
+import cats._
 import cats.data._
 import cats.free.Free
 import cats.implicits._
@@ -22,13 +23,17 @@ import com.snowplowanalytics.snowplow.rdbloader.LoaderError._
 
 /**
   * Result of data discovery in shredded.good folder
-  * @param base ahred run folder full path
+  * @param base shred run folder full path
   * @param atomicCardinality amount of keys in atomic-events directory
   * @param shreddedTypes list of shredded types in this directory
+  * @param specificFolder if specific target loader was provided by `--folder`
+  *                       (remains default `false` until `setSpecificFolder`)
   */
-case class DataDiscovery(base: S3.Folder,
-                         atomicCardinality: Long,
-                         shreddedTypes: List[ShreddedType]) {
+case class DataDiscovery(
+    base: S3.Folder,
+    atomicCardinality: Long,
+    shreddedTypes: List[ShreddedType],
+    specificFolder: Boolean) {
   /** ETL id */
   def runId: String = base.split("/").last
 
@@ -98,7 +103,7 @@ object DataDiscovery {
         discovery <- groupKeysFull(keys)
       } yield discovery
 
-    target match {
+    val result = target match {
       case Global(folder) =>
         val keys: LoaderAction[ValidatedDataKeys] =
           listGoodBucket(folder).map(transformKeys(shredJob, region, assets))
@@ -114,6 +119,21 @@ object DataDiscovery {
         group(keys)
       case ViaManifest(_) =>
         ManifestDiscovery.discover(id, region, assets)
+    }
+
+    setSpecificFolder(target, result)
+  }
+
+  /** Properly set `specificFolder` flag */
+  def setSpecificFolder(target: DiscoveryTarget, discovery: LoaderAction[List[DataDiscovery]]): LoaderAction[List[DataDiscovery]] = {
+    val F = Functor[LoaderAction].compose[List]
+    F.map(discovery) { d =>
+      target match {
+        case InSpecificFolder(_) => d.copy(specificFolder = true)
+        case ViaManifest(Some(_)) => d.copy(specificFolder = true)
+        case ViaManifest(None) => d.copy(specificFolder = false)
+        case Global(_) => d.copy(specificFolder = false)
+      }
     }
   }
 
@@ -165,7 +185,7 @@ object DataDiscovery {
 
     if (atomicKeys.nonEmpty) {
       val shreddedData = shreddedKeys.map(_.info).distinct
-      DataDiscovery(base, atomicKeys.length, shreddedData).validNel
+      DataDiscovery(base, atomicKeys.length, shreddedData, false).validNel
     } else {
       AtomicDiscoveryFailure(base).invalidNel
     }

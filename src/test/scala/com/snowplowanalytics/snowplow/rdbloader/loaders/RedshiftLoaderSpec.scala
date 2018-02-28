@@ -20,10 +20,10 @@ import cats.{Id, ~>}
 import org.specs2.Specification
 
 // This project
-import Common.SqlString.{unsafeCoerce => sql}
+import Common.SqlString.{ unsafeCoerce => sql }
 import S3.{ Folder, Key }
 import config.{ CliConfig, Step, Semver }
-import discovery.{DataDiscovery, ShreddedType}
+import discovery.{ DataDiscovery, ShreddedType }
 
 class RedshiftLoaderSpec extends Specification { def is = s2"""
   Discover atomic events data $e1
@@ -32,6 +32,7 @@ class RedshiftLoaderSpec extends Specification { def is = s2"""
   Do not sleep with disabled consistency check $e4
   Perform manifest-insertion and load within same transaction $e5
   Abort loading if manifest entry exists $e6
+  Perform transit load $e7
   """
 
   import SpecHelpers._
@@ -58,7 +59,7 @@ class RedshiftLoaderSpec extends Specification { def is = s2"""
     }
 
     val expected =
-      List(DataDiscovery(S3.Folder.coerce("s3://snowplow-acme-storage/shredded/good/run=2017-05-22-12-20-57/"), 2, Nil))
+      List(DataDiscovery(S3.Folder.coerce("s3://snowplow-acme-storage/shredded/good/run=2017-05-22-12-20-57/"), 2, Nil, specificFolder = false))
 
     val action = Common.discover(CliConfig(validConfig, validTarget, Set.empty, None, None, false))
     val result = action.value.foldMap(interpreter)
@@ -77,7 +78,7 @@ class RedshiftLoaderSpec extends Specification { def is = s2"""
           ShreddedType.Info(Folder.coerce("s3://snowplow-acme-storage/shredded/good/run=2017-05-22-12-20-57/"), "com.snowplowanalytics.snowplow", "submit_form", 1, Semver(0, 12, 0)),
           Key.coerce("s3://snowplow-hosted-assets-us-east-1/4-storage/redshift-storage/jsonpaths/com.snowplowanalytics.snowplow/submit_form_1.json")
         )
-      )
+      ), specificFolder = false
     )
     val result = RedshiftLoadStatements.buildQueue(validConfig, validTarget, steps)(List(discovery))
 
@@ -86,22 +87,22 @@ class RedshiftLoaderSpec extends Specification { def is = s2"""
          | CREDENTIALS 'aws_iam_role=arn:aws:iam::123456789876:role/RedshiftLoadRole' REGION AS 'us-east-1'
          | DELIMITER '$separator' MAXERROR 1
          | EMPTYASNULL FILLRECORD TRUNCATECOLUMNS
-         | TIMEFORMAT 'auto' ACCEPTINVCHARS ;""".stripMargin
+         | TIMEFORMAT 'auto' ACCEPTINVCHARS """.stripMargin
 
     val vacuum = List(
-      sql("VACUUM SORT ONLY atomic.events;"),
-      sql("VACUUM SORT ONLY atomic.com_snowplowanalytics_snowplow_submit_form_1;"))
+      sql("VACUUM SORT ONLY atomic.events"),
+      sql("VACUUM SORT ONLY atomic.com_snowplowanalytics_snowplow_submit_form_1"))
 
     val analyze = List(
-      sql("ANALYZE atomic.events;"),
-      sql("ANALYZE atomic.com_snowplowanalytics_snowplow_submit_form_1;"))
+      sql("ANALYZE atomic.events"),
+      sql("ANALYZE atomic.com_snowplowanalytics_snowplow_submit_form_1"))
 
     val shredded = List(sql("""
         |COPY atomic.com_snowplowanalytics_snowplow_submit_form_1 FROM 's3://snowplow-acme-storage/shredded/good/run=2017-05-22-12-20-57/shredded-types/vendor=com.snowplowanalytics.snowplow/name=submit_form/format=jsonschema/version=1-'
         | CREDENTIALS 'aws_iam_role=arn:aws:iam::123456789876:role/RedshiftLoadRole' JSON AS 's3://snowplow-hosted-assets-us-east-1/4-storage/redshift-storage/jsonpaths/com.snowplowanalytics.snowplow/submit_form_1.json'
         | REGION AS 'us-east-1'
         | MAXERROR 1 TRUNCATECOLUMNS TIMEFORMAT 'auto'
-        | ACCEPTINVCHARS ;""".stripMargin))
+        | ACCEPTINVCHARS """.stripMargin))
 
     val manifest = """
         |INSERT INTO atomic.manifest
@@ -110,12 +111,10 @@ class RedshiftLoaderSpec extends Specification { def is = s2"""
         | WHERE etl_tstamp IS NOT null
         | GROUP BY 1
         | ORDER BY etl_tstamp DESC
-        | LIMIT 1;""".stripMargin
+        | LIMIT 1""".stripMargin
 
-    val expected = List(RedshiftLoadStatements(
-      "atomic", sql(atomic), shredded, Some(vacuum), Some(analyze), sql(manifest), Folder.coerce("s3://snowplow-acme-storage/shredded/good/run=2017-05-22-12-20-57/")
-
-    ))
+    val expectedItem = RedshiftLoadStatements("atomic", RedshiftLoadStatements.StraightCopy(sql(atomic)), shredded, Some(vacuum), Some(analyze), sql(manifest), Folder.coerce("s3://snowplow-acme-storage/shredded/good/run=2017-05-22-12-20-57/"))
+    val expected = List(expectedItem)
 
     result must beEqualTo(expected)
   }
@@ -193,7 +192,7 @@ class RedshiftLoaderSpec extends Specification { def is = s2"""
           ShreddedType.Info(Folder.coerce("s3://snowplow-acme-storage/shredded/good/run=2017-05-22-12-20-57/"), "com.snowplowanalytics.snowplow", "submit_form", 1, Semver(0, 12, 0, Some(Semver.ReleaseCandidate(4)))),
           Key.coerce("s3://snowplow-hosted-assets-us-east-1/4-storage/redshift-storage/jsonpaths/com.snowplowanalytics.snowplow/submit_form_1.json")
         )
-      )
+      ), specificFolder = false
     ))
 
     result must beRight(expected)
@@ -238,7 +237,7 @@ class RedshiftLoaderSpec extends Specification { def is = s2"""
 
     val input = RedshiftLoadStatements(
       "atomic",
-      sql("LOAD INTO atomic MOCK"),
+      RedshiftLoadStatements.StraightCopy(sql("LOAD INTO atomic MOCK")),
       List(sql("LOAD INTO SHRED 1 MOCK"), sql("LOAD INTO SHRED 2 MOCK"), sql("LOAD INTO SHRED 3 MOCK")),
       Some(List(sql("VACUUM MOCK"))),   // Must be shred cardinality + 1
       Some(List(sql("ANALYZE MOCK"))),
@@ -258,7 +257,7 @@ class RedshiftLoaderSpec extends Specification { def is = s2"""
   def e6 = {
     val expected = List(
       "BEGIN",
-      "LOAD INTO atomic MOCK",
+      "LOAD INTO atomic.events MOCK",
       "SELECT events",
       "SELECT manifest"
     )
@@ -292,9 +291,79 @@ class RedshiftLoaderSpec extends Specification { def is = s2"""
       }
     }
 
+    val shouldNot = "SHOULD NOT BE EXECUTED"
+
     val input = RedshiftLoadStatements(
       "atomic",
-      sql("LOAD INTO atomic MOCK"),
+      RedshiftLoadStatements.StraightCopy(sql("LOAD INTO atomic.events MOCK")),
+      List(sql(shouldNot), sql(shouldNot), sql(shouldNot)),
+      Some(List(sql(shouldNot))),   // Must be shred cardinality + 1
+      Some(List(sql(shouldNot))),
+      sql(shouldNot),
+      Folder.coerce("s3://noop")
+    )
+
+    val state = RedshiftLoader.loadFolder(true)(input)
+    val action = state.value
+    val result = action.foldMap(interpreter)
+
+    val transactionsExpectation = queries.toList must beEqualTo(expected)
+    val resultExpectation = result must beLeft
+    transactionsExpectation.and(resultExpectation)
+  }
+
+  def e7 = {
+
+    val expected = List(
+      "BEGIN",
+      "SELECT description", "CREATE TEMPORARY TABLE", "LOAD INTO temp_transit_events MOCK",
+      "SELECT etl_tstamp", "SELECT manifest",
+
+      "ALTER TABLE atomic.events APPEND FROM temp_transit_events",
+      "LOAD INTO SHRED 1 MOCK", "LOAD INTO SHRED 2 MOCK", "LOAD INTO SHRED 3 MOCK", "MANIFEST INSERT MOCK", "COMMIT", "END",
+      "VACUUM MOCK", "BEGIN", "ANALYZE MOCK", "COMMIT"
+    )
+
+    val queries = collection.mutable.ListBuffer.empty[String]
+
+    def interpreter: LoaderA ~> Id = new (LoaderA ~> Id) {
+      def apply[A](effect: LoaderA[A]): Id[A] = {
+        effect match {
+          case LoaderA.ExecuteUpdate(query) if query.contains("CREATE TEMPORARY TABLE") =>
+            queries.append("CREATE TEMPORARY TABLE")
+            Right(1L)
+
+          case LoaderA.ExecuteUpdate(query) =>
+            queries.append(query)
+            Right(1L)
+
+          case LoaderA.Print(_) =>
+            ()
+
+          case LoaderA.ExecuteQuery(query, _) if query.contains("FROM atomic.manifest") =>
+            queries.append("SELECT manifest")
+            val etlTime = Instant.ofEpochMilli(1519757441133L)
+            val commitTime = Instant.ofEpochMilli(1519777441133L)
+            Right(Some(db.Entities.LoadManifestItem(etlTime, commitTime, 1000, 5)))
+
+          case LoaderA.ExecuteQuery(query, _) if query.contains("SELECT description") =>
+            queries.append("SELECT description")
+            Right(Some(db.Entities.AtomicEventsDescription(Semver(0,10,0))))
+
+          case LoaderA.ExecuteQuery(query, _) if query.contains("SELECT etl_tstamp") =>
+            queries.append("SELECT etl_tstamp")
+            val time = Instant.ofEpochMilli(1520164735L)
+            Right(Some(db.Entities.Timestamp(time)))
+
+          case action =>
+            throw new RuntimeException(s"Unexpected Action [$action]")
+        }
+      }
+    }
+
+    val input = RedshiftLoadStatements(
+      "atomic",
+      RedshiftLoadStatements.TransitCopy(sql("LOAD INTO temp_transit_events MOCK")),
       List(sql("LOAD INTO SHRED 1 MOCK"), sql("LOAD INTO SHRED 2 MOCK"), sql("LOAD INTO SHRED 3 MOCK")),
       Some(List(sql("VACUUM MOCK"))),   // Must be shred cardinality + 1
       Some(List(sql("ANALYZE MOCK"))),
@@ -307,7 +376,7 @@ class RedshiftLoaderSpec extends Specification { def is = s2"""
     val result = action.foldMap(interpreter)
 
     val transactionsExpectation = queries.toList must beEqualTo(expected)
-    val resultExpectation = result must beLeft
+    val resultExpectation = result must beRight(())
     transactionsExpectation.and(resultExpectation)
   }
 }
