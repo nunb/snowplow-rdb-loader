@@ -23,7 +23,10 @@ import com.amazonaws.services.s3.model.ObjectMetadata
 
 import org.json4s.JObject
 
+import com.snowplowanalytics.iglu.core.{SchemaKey, SchemaVer, SelfDescribingData}
+
 import com.snowplowanalytics.snowplow.scalatracker._
+import com.snowplowanalytics.snowplow.scalatracker.emitters.TEmitter._
 import com.snowplowanalytics.snowplow.scalatracker.emitters.{AsyncBatchEmitter, AsyncEmitter}
 
 // This project
@@ -31,9 +34,25 @@ import config.SnowplowConfig.{GetMethod, Monitoring, PostMethod}
 
 object TrackerInterpreter {
 
-  val ApplicationContextSchema = "iglu:com.snowplowanalytics.monitoring.batch/application_context/jsonschema/1-0-0"
-  val LoadSucceededSchema = "iglu:com.snowplowanalytics.monitoring.batch/load_succeeded/jsonschema/1-0-0"
-  val LoadFailedSchema = "iglu:com.snowplowanalytics.monitoring.batch/load_failed/jsonschema/1-0-0"
+  import scala.concurrent.ExecutionContext.Implicits.global
+
+  val ApplicationContextSchema = SchemaKey("com.snowplowanalytics.monitoring.batch", "application_context", "jsonschema", SchemaVer(1,0,0))
+  val LoadSucceededSchema = SchemaKey("com.snowplowanalytics.monitoring.batch", "load_succeded", "jsonschema", SchemaVer(1,0,0))
+  val LoadFailedSchema = SchemaKey("com.snowplowanalytics.monitoring.batch", "load_failed", "jsonschema", SchemaVer(1,0,0))
+
+  /** Callback for failed  */
+  private def callback(params: CollectorParams, request: CollectorRequest, response: CollectorResponse): Unit = {
+    def toMsg(rsp: CollectorResponse): String = rsp match {
+      case CollectorFailure(code) => s"Cannot deliver event to ${params.getUri}. Collector responded with $code"
+      case TrackerFailure(error) => s"Cannot deliver event to ${params.getUri}. Tracker failed due ${error.getMessage}"
+      case RetriesExceeded(r) => s"Tracker gave up on trying to deliver event. Last error: ${toMsg(r)}"
+      case CollectorSuccess(_) => ""
+    }
+
+    val message = toMsg(response)
+
+    if (message.isEmpty) () else println(message)
+  }
 
   /**
    * Initialize Snowplow tracker, if `monitoring` section is properly configured
@@ -46,11 +65,11 @@ object TrackerInterpreter {
       case Some(Collector((host, port))) =>
         val emitter = monitoring.snowplow.flatMap(_.method) match {
           case Some(GetMethod) =>
-            AsyncEmitter.createAndStart(host, port = port)
+            AsyncEmitter.createAndStart(host, port = Some(port), callback = Some(callback))
           case Some(PostMethod) =>
-            AsyncBatchEmitter.createAndStart(host, port = port, bufferSize = 2)
+            AsyncBatchEmitter.createAndStart(host, port = Some(port), bufferSize = 2)
           case None =>
-            AsyncEmitter.createAndStart(host, port = port)
+            AsyncEmitter.createAndStart(host, port = Some(port), callback = Some(callback))
         }
         val tracker = new Tracker(List(emitter), "snowplow-rdb-loader", monitoring.snowplow.flatMap(_.appId).getOrElse("rdb-loader"))
         Some(tracker)
@@ -67,7 +86,7 @@ object TrackerInterpreter {
    */
   def trackError(tracker: Option[Tracker], error: String): Unit = tracker match {
     case Some(t) =>
-      t.trackUnstructEvent(SelfDescribingJson(LoadFailedSchema, JObject(Nil)))
+      t.trackSelfDescribingEvent(SelfDescribingData(LoadFailedSchema, JObject(Nil)))
     case None => println(error)
   }
 
@@ -78,7 +97,7 @@ object TrackerInterpreter {
    */
   def trackSuccess(tracker: Option[Tracker]): Unit = tracker match {
     case Some(t) =>
-      t.trackUnstructEvent(SelfDescribingJson(LoadSucceededSchema, JObject(Nil)))
+      t.trackSelfDescribingEvent(SelfDescribingData(LoadSucceededSchema, JObject(Nil)))
     case None => ()
   }
 

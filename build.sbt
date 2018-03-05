@@ -26,9 +26,7 @@ lazy val loader = project.in(file("."))
     libraryDependencies ++= Seq(
       Dependencies.scopt,
       Dependencies.scalaz7,
-      Dependencies.json4s,
       Dependencies.igluClient,
-      Dependencies.igluCore,
       Dependencies.scalaTracker,
       Dependencies.catsFree,
       Dependencies.circeYaml,
@@ -68,7 +66,6 @@ lazy val shredder = project.in(file("shredder"))
       // Scala
       Dependencies.sparkCore,
       Dependencies.sparkSQL,
-      Dependencies.json4s,
       Dependencies.scalaz7,
       Dependencies.scopt,
       Dependencies.commonEnrich,
